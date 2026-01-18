@@ -1,0 +1,13 @@
+.env
+webdrivers/
+__pycache__/
+captchas/
+*.log
+index.html
+test/
+pokemon_counts.json
+*.bat
+!run_account_example.bat
+logs/
+json_info/
+screenshots/
