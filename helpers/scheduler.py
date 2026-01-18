@@ -4,7 +4,6 @@ import random
 from helpers.sleep_helper import interruptible_sleep
 from logger import Logger
 from colorama import Fore, Style
-from license_guard import verify_license
 # Khởi tạo logger để in thông báo màu mè cho đẹp
 logger = Logger().get_logger()
 
@@ -83,7 +82,6 @@ class Scheduler:
             # 2. VÒNG LẶP FARMING (WORK LOOP)
             # ========================================================
             while time.time() < end_work_time:
-                verify_license(interactive=False)
                 
                 # [Anti-Ban] Micro-break (Lơ đễnh nhẹ)
                 # Burst mode thì tập trung hơn (ít lơ đễnh hơn)
