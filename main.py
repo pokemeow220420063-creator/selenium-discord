@@ -30,8 +30,6 @@ def try_login(driver):
     
      
 if __name__ == "__main__":
-    from license_guard import verify_license
-    verify_license(interactive=True)
     try_login(driver)
     driver.validate()
     driver.print_initial_message()
