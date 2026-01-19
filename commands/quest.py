@@ -1,89 +1,117 @@
-from bs4 import BeautifulSoup
-from driver import Driver
-from helpers.sleep_helper import interruptible_sleep
+import asyncio
+import re
 from logger import Logger
-from settings import Settings
-from catch_statistics import CatchStatistics
-settings = Settings()
-catch_statistics = CatchStatistics()
-logger = Logger().get_logger()
 
+logger = Logger().get_logger()
 
 class Quest:
     @staticmethod
-    def actions(driver: Driver, inventory):
-        #Check quests
+    async def actions(driver, inventory):
+        """
+        Refactor: Chuyển sang Async, dùng driver API.
+        """
+        # 1. Gửi lệnh kiểm tra Quest
         logger.info("[Quest] Checking quests...")
-        driver.write(";q")
-        quests_element = driver.get_last_element_by_user("PokéMeow")
+        await driver.write(";q")
         
-        if quests_element.text == "Please wait":
-            interruptible_sleep(4.5)
-            logger.info("[Quest] Please wait...")
-            Quest.actions(driver, inventory)
+        # 2. Đợi phản hồi
+        quests_message = await driver.get_last_element_by_user("PokéMeow")
+        
+        if not quests_message:
+            logger.info("[Quest] No response from bot.")
             return
-        # get html content of quests
-        quests_list = Quest.get_quests_list(quests_element)
-        reroll_count = next((item['count'] for item in inventory if item['name'] == 'questreset'), None)
-        interruptible_sleep(4)
+
+        content = quests_message.content or ""
+
+        # 3. Check "Please wait"
+        if "please wait" in content.lower():
+            await asyncio.sleep(4.5)
+            logger.info("[Quest] Please wait...")
+            await Quest.actions(driver, inventory) # Đệ quy
+            return
+
+        # 4. Parse danh sách Quest
+        quests_list = Quest.get_quests_list(quests_message)
+        
+        # 5. Kiểm tra vé Quest Reset
+        reroll_count = next((item['count'] for item in inventory if item['name'] == 'questreset'), 0)
+        
+        await asyncio.sleep(2)
+        
+        # 6. Logic Reroll
         if reroll_count and reroll_count > 0:
-            for reroll in range(reroll_count):
+            for _ in range(reroll_count):
+                # Duyệt qua từng quest đang có
                 for quest in quests_list:
                     for key, value in quest.items():
+                        # Nếu quest KHÔNG PHẢI "dexcaught" -> Reroll
                         if value != "dexcaught":
-                            logger.info(f"[Quest] Rerolling quest {key}...")
-                            quests_element = Quest.reroll_quest(driver, key)
-                            interruptible_sleep(6)
-                            if quests_element is None:
+                            logger.info(f"[Quest] Rerolling quest {key} ({value})...")
+                            
+                            new_message = await Quest.reroll_quest(driver, key)
+                            await asyncio.sleep(4)
+                            
+                            if new_message is None:
                                 break
-                            quests_list = Quest.get_quests_list(quests_element)
-                            break
-            
-
-        
-        logger.info(f"[Quest] Quests: {quests_list}")
-        
+                            
+                            # Cập nhật lại list quest
+                            quests_list = Quest.get_quests_list(new_message)
+                            break # Break inner loop để check lại từ đầu
 
     @staticmethod
-    def get_quests_list(quests_element):
-        import re
-        def contains_partial_class(partial):
-            return re.compile(".*" + partial + ".*")
-    
-        quests_html = quests_element.get_attribute('outerHTML')
-        soup = BeautifulSoup(quests_html, 'html.parser')
-        quests_container = soup.find('div', class_=contains_partial_class("gridContainer"))
-        quests = quests_container.find_all('strong')
+    def get_quests_list(message):
+        """
+        Parse Embed để lấy danh sách Quest
+        Output: List [{1: 'dexcaught'}, {2: 'battle'}]
+        """
         quest_data = []
-    
-        for quest in quests:
-            quest_number_text = quest.span.text.strip()
-            match = re.search(r'\d+', quest_number_text)
-            if match:
-                quest_number = int(match.group())
-                emoji_img = quest.find_next("img", class_="emoji")
-                if emoji_img and 'alt' in emoji_img.attrs:
-                    emoji = emoji_img['alt'].strip(':')
-                    quest_data.append({quest_number: emoji})
-                else:
-                    print(f"DEBUG: Emoji image not found or missing 'alt' attribute in quest {quest_number_text}")
-            else:
-                print(f"DEBUG: Could not extract quest number from '{quest_number_text}'")
-    
+        if not message.embeds:
+            return quest_data
+
+        description = message.embeds[0].description or ""
+        
+        for line in description.split('\n'):
+            # Tìm số thứ tự Quest
+            num_match = re.search(r'\*\*Quest #(\d+)\*\*:', line)
+            if not num_match:
+                num_match = re.search(r'\*\*(\d+)\.\*\*', line)
+
+            if num_match:
+                quest_number = int(num_match.group(1))
+                emoji_name = "unknown"
+
+                # Tìm Emoji biểu thị loại Quest
+                custom_emoji = re.search(r'<:(\w+):', line)
+                simple_emoji = re.search(r':(\w+):', line)
+
+                if custom_emoji:
+                    emoji_name = custom_emoji.group(1)
+                elif simple_emoji:
+                    if simple_emoji.group(1).lower() != "quest":
+                        emoji_name = simple_emoji.group(1)
+                
+                quest_data.append({quest_number: emoji_name})
+
         return quest_data
 
-        
     @staticmethod
-    def reroll_quest(driver: Driver, quest_number: int):
-        driver.write(f";q r {quest_number}")
-        quests_element = driver.get_last_element_by_user("PokéMeow")
-        if "Please wait" in quests_element.text:
-            interruptible_sleep(3.5)
-            logger.info("[Quest Reroll] Please wait...")
-            return Quest.reroll_quest(driver, quest_number)
+    async def reroll_quest(driver, quest_number: int):
+        await driver.write(f";q r {quest_number}")
         
-        if "You don't have any quest reset" in quests_element.text:
+        quests_message = await driver.get_last_element_by_user("PokéMeow")
+        
+        if not quests_message:
+            return None
+            
+        content = (quests_message.content or "").lower()
+        
+        if "please wait" in content:
+            await asyncio.sleep(3.5)
+            logger.info("[Quest Reroll] Please wait...")
+            return await Quest.reroll_quest(driver, quest_number)
+        
+        if "don't have any quest reset" in content:
             logger.info("[Quest Reroll] You don't have any quest reset...")
             return None
 
-        return quests_element
+        return quests_message

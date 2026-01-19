@@ -1,87 +1,112 @@
-from bs4 import BeautifulSoup
-import json
-from selenium.webdriver.remote.webelement import WebElement
-from helpers.sleep_helper import interruptible_sleep
-from driver import Driver
+import asyncio
+import re
 from logger import Logger
-import colorama
-from colorama import Fore, Back, Style
+from colorama import Fore, Style
 from catch_statistics import CatchStatistics
 
-catch_statistics = CatchStatistics()
+from logger import Logger
 logger = Logger().get_logger()
 class Egg:
-    
     @staticmethod
-    def get_egg_status(html_content):
-        # Check if html_content is a WebElement
-        if isinstance(html_content, WebElement):
-            html_content = html_content.get_attribute('outerHTML')
-
-        soup = BeautifulSoup(html_content, 'html.parser')
-        # Check for READY TO HATCH
-        ready_to_hatch = soup.find(string="[READY TO HATCH!]")
-        if ready_to_hatch:
-            return {"can_hatch": True, "can_hold": False}
-
-        # Check for holding egg with counter
-        counter = soup.find(string=lambda text: "[COUNTER:" in text)
-        if counter:
-            return {"can_hatch": False, "can_hold": False}
-
-        # Check for no egg and no holding
-        eggs = soup.find_all(string=lambda text: "x Eggs" in text)
-        for egg in eggs:
-            if "0x Eggs" in egg:
-                return {"can_hatch": False, "can_hold": True}
-
-        # If none of the conditions above are met, we cannot determine the status
-        return {"can_hatch": False, "can_hold": True}
-    
-    @staticmethod
-    def get_hatch_result(html_content):
-        # Check if html_content is a WebElement
-        if isinstance(html_content, WebElement):
-            html_content = html_content.get_attribute('outerHTML')
+    async def actions(driver, inventory):
+        """
+        Refactor: Chuyển sang Async.
+        Logic:
+        1. Lấy tin nhắn Inventory vừa xuất hiện.
+        2. Soi trạng thái trứng (Ready/Counter/Empty).
+        3. Hatch hoặc Hold tùy tình huống.
+        """
+        logger.info("[Egg] Checking Eggs status...")
         
-        soup = BeautifulSoup(html_content, 'html.parser')
+        # 1. Lấy tin nhắn cuối cùng (Tin nhắn Inventory)
+        # Vì hàm check_inventory vừa chạy xong, tin nhắn cuối chính là nó.
+        message = await driver.get_last_message_from_user("PokéMeow")
         
-        # Find the text 'just hatched a' to locate the general area where the Pokémon name is expected
-        hatched_text = soup.find(text=lambda t: "just hatched a" in t)
-        
-        # Find the next strong tag after the 'just hatched a' text, which should contain the Pokémon name
-        if hatched_text and hatched_text.find_next("strong"):
-            pokemon_name = hatched_text.find_next("strong").text
-        else:
-            pokemon_name = None
+        if not message:
+            logger.info("[Egg] Could not find inventory message.")
+            return
 
-        return pokemon_name  # Make sure to return the result
-    
-    @staticmethod
-    def actions(driver:Driver, inventory):
-        logger.info("[Egg] Checking Eggs...")
+        # 2. Phân tích trạng thái từ Embed Inventory
+        egg_status = Egg.get_egg_status(message)
         can_hold_egg = False
-        # if ENABLE_AUTO_EGG_HATCH:
-        egg_status = Egg.get_egg_status(driver.get_last_message_from_user("PokéMeow"))
-        # logger.info(f"[Egg actions] Egg status: {egg_status}")
+
+        # 3. Logic Ấp trứng (Hatch)
         if egg_status["can_hatch"]:
-                interruptible_sleep(3)
-                logger.info(f"{Fore.YELLOW}🐣 Hatching egg...{Style.RESET_ALL}")
-                driver.write(";egg hatch")
-                can_hold_egg = True
-                hatch_element = driver.get_last_element_by_user("PokéMeow", timeout=30)
-                interruptible_sleep(6)
-                if hatch_element is not None:
-                    pokemon_hatched = Egg.get_hatch_result(hatch_element)
-                    catch_statistics.add_hatch(pokemon_hatched)
+            await asyncio.sleep(3)
+            logger.info(f"{Fore.YELLOW}🐣 Hatching egg...{Style.RESET_ALL}")
+            
+            # Gửi lệnh ấp
+            await driver.write(";egg hatch")
+            can_hold_egg = True # Nở xong thì tay rảnh
+            
+            # Đợi tin nhắn kết quả nở trứng
+            hatch_msg = await driver.get_last_element_by_user("PokéMeow", timeout=30)
+            await asyncio.sleep(6)
+            
+            if hatch_msg:
+                # Lấy tên Pokemon nở ra
+                pokemon_hatched = Egg.get_hatch_result(hatch_msg)
+                
+                if pokemon_hatched:
+                    if catch_statistics:
+                        catch_statistics.add_hatch(pokemon_hatched)
                     logger.info(f"🐣{Fore.GREEN} A {Style.RESET_ALL}{Fore.LIGHTCYAN_EX}{pokemon_hatched}{Style.RESET_ALL} {Fore.GREEN}has been hatched!{Style.RESET_ALL}")
-                    
-                    
-                    
-        # Check if can hold egg
-        poke_egg_count = next((item['count'] for item in inventory if item['name'] == 'poke_egg'), None)
+
+        # 4. Logic Cầm trứng (Hold)
+        # Kiểm tra xem có trứng trong túi đồ không
+        poke_egg_count = next((item['count'] for item in inventory if item['name'] == 'poke_egg'), 0)
+        
         if poke_egg_count > 0:
+            # Nếu Inventory báo rảnh tay HOẶC vừa mới ấp xong
             if egg_status["can_hold"] or can_hold_egg:
                 logger.info(f"{Fore.YELLOW}🥚 Holding egg...{Style.RESET_ALL}")
-                driver.write(";egg hold")
-                interruptible_sleep(2.5)
+                await driver.write(";egg hold")
+                await asyncio.sleep(2.5)
+
+    @staticmethod
+    def get_egg_status(message):
+        """
+        Refactor: Thay thế BeautifulSoup.
+        Soi Embed của tin nhắn ;inv để tìm chuỗi [COUNTER: ...] hoặc [READY TO HATCH!]
+        """
+        status = {"can_hatch": False, "can_hold": True} # Mặc định là hold được nếu không tìm thấy gì
+        
+        if not message or not message.embeds:
+            return status
+
+        # Duyệt qua các field trong Embed Inventory
+        # Thông thường thông tin trứng nằm ở field "Fishing" hoặc "Eggs" tùy version bot
+        for field in message.embeds[0].fields:
+            value = field.value
+            
+            # Case 1: Trứng đã chín
+            if "[READY TO HATCH!]" in value:
+                return {"can_hatch": True, "can_hold": False}
+            
+            # Case 2: Đang ấp dở (Có Counter)
+            if "[COUNTER:" in value:
+                return {"can_hatch": False, "can_hold": False}
+            
+            # Case 3: Không tìm thấy 2 chuỗi trên trong field này -> Tiếp tục vòng lặp
+        
+        # Nếu duyệt hết mà không thấy Counter/Ready -> Tức là chưa cầm trứng
+        return status
+
+    @staticmethod
+    def get_hatch_result(message):
+        """
+        Refactor: Dùng Regex bắt tên Pokemon từ tin nhắn kết quả ấp trứng.
+        Mẫu: "You just hatched a **Pikachu**!"
+        """
+        if not message.embeds:
+            return None
+            
+        description = message.embeds[0].description or ""
+        
+        # Regex tìm chuỗi trong **...** sau cụm từ "hatched a"
+        match = re.search(r'hatched a \*\*(.+?)\*\*', description)
+        
+        if match:
+            return match.group(1)
+            
+        return None

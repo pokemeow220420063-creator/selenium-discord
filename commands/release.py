@@ -1,109 +1,93 @@
-from bs4 import BeautifulSoup
+import asyncio
+import re
+from colorama import Fore, Style
 from commands.handlers.action_handler import ActionHandler
 from driver import Driver
 from logger import Logger
-from helpers.handle_exception import handle_on_start_exceptions
-from helpers.sleep_helper import interruptible_sleep
-from validators.response_validator import evaluate_response
-from validators.action import Action
-from colorama import Fore, Style
-import re
+from catch_statistics import CatchStatistics
+
+logger = Logger().get_logger()
+catch_statistics = CatchStatistics()
 
 class Release(ActionHandler):
     def __init__(self, driver: Driver):
-        super().__init__()
+        super().__init__(driver.bot)
         self.driver = driver
-        self.logger = Logger().get_logger()
 
-    @handle_on_start_exceptions
-    def start(self, command: str = ";r d"):
-        self.logger.info(f"[Release] Checking release...")
-        self.driver.write(command)
+    async def start(self, command=";r d"):
+        """
+        Tự động xả (Release) Pokemon trùng lặp.
+        """
+        logger.info(f"[Release] Checking release duplicates...")
         
-        element_response = self.driver.get_last_element_by_user("PokéMeow", timeout=15)
+        # 1. Gửi lệnh
+        await self.driver.write(command)
         
+        # 2. Đợi phản hồi
+        message = await self.driver.get_last_message_from_user("PokéMeow")
+        
+        if not message:
+            logger.warning("[Release] No response from bot.")
+            return
+
+        content = (message.content or "").lower()
+
+        # --- XỬ LÝ CAPTCHA ---
+        if "captcha" in content:
+            await self.handle_action(None, message)
+            return
+
         # --- XỬ LÝ PLEASE WAIT ---
-        if "Please wait" in element_response.text:
-            self.logger.warning(f"[Release] Please wait. Retrying...")
-            interruptible_sleep(4)
-            return self.start(command)
-
-        # Validate
-        action = evaluate_response(element_response)
-        if action is Action.SKIP:
-            interruptible_sleep(2)
-            return
-        if action is not Action.PROCEED:
-            self.handle_action(action, self.driver, element_response)
+        if "please wait" in content:
+            logger.info(f"[Release] Please wait. Retrying in 4s...")
+            await asyncio.sleep(4)
+            await self.start(command)
             return
 
-        self.process_release_response(element_response)
-
-    def process_release_response(self, element):
-        soup = BeautifulSoup(element.get_attribute('outerHTML'), "html.parser")
-        
-        # 1. Xóa phần trích dẫn (Reply)
-        for reply in soup.find_all(class_=re.compile("repliedMessage")):
-            reply.decompose()
-
-        # 2. Thay thế hình ảnh bằng text (alt) để Regex bắt được độ hiếm
-        for img in soup.find_all("img", alt=True):
-            img.replace_with(img['alt'])
-
-        # 3. Lấy text sạch
-        full_text = soup.get_text(separator=' ', strip=True)
-        full_text = re.sub(r'\s+', ' ', full_text) # Xóa khoảng trắng thừa
-        full_text_lower = full_text.lower()
-
-        # --- LOGIC XỬ LÝ ---
-
-        # 1. TRƯỜNG HỢP THÀNH CÔNG
-        if "released" in full_text_lower and "earning" in full_text_lower:
+        # --- TRƯỜNG HỢP 1: THÀNH CÔNG ---
+        # Mẫu: "... released :Common:x**30** ... earning :PokeCoin: **10,600**!"
+        if "released" in content and "earning" in content:
+            # Parse tổng tiền
+            coins_match = re.search(r'earning.*?\*\*([\d,]+)\*\*', message.content, re.IGNORECASE)
+            coins = int(coins_match.group(1).replace(',', '')) if coins_match else 0
             
-            # Lấy chi tiết các loại đã thả (Tìm chuỗi kiểu ":Rare: x 3")
-            details = re.findall(r':(\w+):\s*x\s*(\d+)', full_text)
+            # Parse chi tiết số lượng từng loại
+            # Regex: :Common:x**5**
+            details = re.findall(r':(\w+):x\*\*(\d+)\*\*', message.content)
             
-            # Lấy số Coins
-            coins_match = re.search(r'earning.*?([\d,]+)', full_text, re.IGNORECASE)
-            coins = coins_match.group(1) if coins_match else "0"
-            
-            # Tính tổng số lượng
-            total_released = sum(int(count) for _, count in details)
-            
-            # Cấu hình màu sắc
+            # Log đẹp
             rarity_config = {
-                "Common":    ("C", Fore.BLUE),
-                "Uncommon":  ("U", Fore.CYAN),
-                "Rare":      ("R", Fore.WHITE),     # Giả lập cam bằng đỏ
-                "SuperRare": ("SR", Fore.YELLOW),
-                "Legendary": ("L", Fore.MAGENTA),
-                "Shiny":     ("S", Fore.LIGHTWHITE_EX)
+                "Common": ("C", Fore.BLUE), "Uncommon": ("U", Fore.CYAN),
+                "Rare": ("R", Fore.WHITE), "SuperRare": ("SR", Fore.YELLOW),
+                "Legendary": ("L", Fore.MAGENTA)
             }
             
-            # Tạo chuỗi log có màu
-            formatted_parts = []
-            for name, count in details:
-                if name in rarity_config:
-                    abbr, color = rarity_config[name]
-                    # Format: {MÀU}{VIẾT TẮT}:{SỐ}{RESET}
-                    formatted_parts.append(f"{color}{abbr}:{count}{Style.RESET_ALL}")
-                else:
-                    formatted_parts.append(f"{name}:{count}")
+            details_list = []
+            total_released = 0
             
-            detail_str = " | ".join(formatted_parts)
+            for rarity_name, count_str in details:
+                count = int(count_str)
+                total_released += count
+                
+                if rarity_name in rarity_config:
+                    abbr, color = rarity_config[rarity_name]
+                    details_list.append(f"{color}{abbr}:{count}{Style.RESET_ALL}")
+                else:
+                    details_list.append(f"{rarity_name}:{count}")
 
-            self.logger.info(
+            detail_str = " | ".join(details_list)
+
+            # Cập nhật thống kê
+            catch_statistics.add_catch(rarity="Released Duplicates", coins=coins)
+
+            logger.info(
                 f"{Fore.GREEN}[Release]{Style.RESET_ALL} {Fore.GREEN}Success!{Style.RESET_ALL} "
                 f"{Fore.GREEN}Total:{Style.RESET_ALL} {Fore.CYAN}{total_released}{Style.RESET_ALL} ({detail_str}) | "
                 f"{Fore.GREEN}Earned:{Style.RESET_ALL} {Fore.YELLOW}{coins} Coins{Style.RESET_ALL}"
             )
             return
 
-        # 2. TRƯỜNG HỢP KHÔNG CÓ GÌ ĐỂ RELEASE
-        elif "don't have any duplicate" in full_text_lower:
-            self.logger.info(f"[Release] No duplicate Pokemon to release.")
+        # --- TRƯỜNG HỢP 2: KHÔNG CÓ GÌ ĐỂ RELEASE ---
+        elif "don't have any duplicate" in content:
+            logger.info(f"[Release] No duplicates to release.")
             return
-
-        # 3. TRƯỜNG HỢP KHÁC
-        else:
-            self.logger.warning(f"[Release] Unknown response: {full_text[:60]}...")

@@ -1,63 +1,55 @@
-import discord
-from utils import Logger
+from logger import Logger
 from validators.action import Action
+# Lưu ý: API dùng asyncio.sleep, nhưng validator chỉ return Action nên không cần sleep ở đây
+# Việc sleep sẽ do ActionHandler lo để đảm bảo non-blocking
 
-class ResponseValidator:
-    @staticmethod
-    def get_full_text(message: discord.Message) -> str:
-        """Hàm trợ giúp: Gộp toàn bộ text trong tin nhắn (Content + Embed)"""
-        text = (message.content or "") + " "
+logger = Logger().get_logger()
+
+def evaluate_response(message) -> str:
+    # message: Là object tin nhắn của Discord (discord.Message)
+    
+    # Trường hợp không thấy tin nhắn (Lag/Mất mạng)
+    if message is None:
+        # Giữ nguyên log cũ dù API không refresh trang
+        logger.error('No response from PokéMeow, refreshing page...') 
+        return Action.REFRESH
+    
+    content = message.content # Lấy nội dung tin nhắn
+    
+    if "A wild Captcha appeared!" in content:
+        logger.warning('A wild Captcha appeared!')
+        return Action.SOLVE_CAPTCHA
         
-        if message.embeds:
-            embed = message.embeds[0]
-            text += (embed.title or "") + " "
-            text += (embed.description or "") + " "
-            if embed.footer:
-                text += (embed.footer.text or "")
-        
-        return text.lower() # Chuyển về chữ thường để so sánh cho dễ
-
-    @staticmethod
-    def evaluate_response(message: discord.Message) -> str:
-        """Phân tích tin nhắn để quyết định hành động tiếp theo"""
-        
-        # 1. Trường hợp không nhận được tin nhắn (Timeout)
-        if message is None:
-            Logger.error('No response from PokéMeow (Timeout). Retrying...')
-            return Action.REFRESH
-        
-        # Lấy toàn bộ nội dung text
-        full_text = ResponseValidator.get_full_text(message)
-
-        # 2. KIỂM TRA CAPTCHA (Ưu tiên số 1)
-        # Check cả keywords: captcha, human, verify
-        if "captcha" in full_text or "verify" in full_text:
-            Logger.error('🚨 A wild Captcha appeared! Action: SOLVE_CAPTCHA')
-            return Action.SOLVE_CAPTCHA
-        
-        # 3. Các trường hợp Cooldown / Wait
-        if "please wait" in full_text:
-            Logger.log_transaction("System", "0", "Cooldown detected. Waiting...")
-            return Action.RETRY
-        
-        if "you can now catch" in full_text:
-            Logger.log_transaction("System", "0", "Cooldown finished. Retrying...")
-            return Action.RETRY
-
-        # 4. Lỗi Logic Game
-        if "please catch the" in full_text:
-            Logger.error('⚠️ Found uncaught Pokemon! Action: CATCH_AGAIN')
-            return Action.CATCH_AGAIN
-
-        # 5. Câu cá (Fishing)
-        if "not even a nibble" in full_text:
-            Logger.log_transaction("Fishing", "0", "🎣 Not even a nibble... Skipping.")
-            return Action.SKIP
-
-        # 6. Giới hạn ngày (Daily Limit)
-        if "reached your daily catch" in full_text or "reached the daily" in full_text:
-            Logger.error('⛔ Daily catch limit reached! Stopping bot.')
-            return Action.PAUSE
-
-        # 7. Nếu không dính lỗi nào -> Tiến hành bắt (PROCEED)
-        return Action.PROCEED
+    if "Please wait" in content:
+        logger.info('Please wait...')
+        # interruptible_sleep(1.5) -> Đã chuyển sang Handler xử lý
+        return Action.RETRY
+    
+    if "Please catch the" in content:
+        logger.error('Please catch the Pokemon you spawned first!')
+        return Action.CATCH_AGAIN
+    
+    if "You can now catch" in content:
+        logger.info('You can now catch Pokemon again.')
+        # interruptible_sleep(3) -> Đã chuyển sang Handler xử lý
+        return Action.RETRY
+    
+    if "Not even a nibble" in content:
+        logger.info('🎣 [ESCAPED!] Not even a nibble...')
+        return Action.SKIP
+    
+    if "reached your daily catch" in content:
+        # Giữ nguyên 3 dòng log như code cũ
+        logger.warning('You reached your daily catch limit. Stopping the bot...')
+        logger.warning('You reached your daily catch limit. Stopping the bot...')
+        logger.warning('You reached your daily catch limit. Stopping the bot...')
+        return Action.PAUSE
+    
+    if "have reached the daily" in content:
+        # Giữ nguyên 3 dòng log như code cũ
+        logger.warning('You reached your daily catch limit. Stopping the bot...')
+        logger.warning('You reached your daily catch limit. Stopping the bot...')
+        logger.warning('You reached your daily catch limit. Stopping the bot...')
+        return Action.PAUSE
+       
+    return Action.PROCEED

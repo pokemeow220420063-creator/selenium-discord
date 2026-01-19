@@ -1,12 +1,14 @@
 class Action:
-    RETRY = 'retry'           # Thử lại (do cooldown, lag)
-    SOLVE_CAPTCHA = 'solve_captcha' # Gặp captcha
-    WAIT = 'wait'             # Chờ đợi
-    CATCH_POKEMON = 'catch_pokemon' # Bắt (trạng thái bình thường)
-    CATCH_AGAIN = 'catch_again' # Lỗi chưa bắt con cũ
-    STOP_BOT = 'stop_bot'     # Dừng hẳn
-    PAUSE = 'pause'           # Tạm dừng (hết lượt bắt)
-    PROCEED = 'proceed'       # Tiếp tục
-    UNKNOWN = 'unknown'       # Không rõ
-    SKIP = 'skip'             # Bỏ qua (câu cá hụt)
-    REFRESH = 'refresh'       # Mất kết nối (timeout)
+    RETRY = 'retry'
+    SOLVE_CAPTCHA = 'solve_captcha'
+    CATCH_AGAIN = 'catch_again'
+    PAUSE = 'pause'
+    PROCEED = 'proceed'
+    SKIP = 'skip'
+    REFRESH = 'refresh' # Vẫn giữ để Validator trả về đúng y hệt code cũ (không dùng nữa vì API không dùng)
+
+    # Các action cũ không dùng, giữ lại cho đủ bộ nếu muốn
+    UNKNOWN = 'unknown'
+    WAIT = 'wait'
+    CATCH_POKEMON = 'catch_pokemon'
+    STOP_BOT = 'stop_bot'

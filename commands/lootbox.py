@@ -1,58 +1,75 @@
-from bs4 import BeautifulSoup
-from driver import Driver
-from helpers.sleep_helper import interruptible_sleep
+import asyncio
+import re
 from logger import Logger
-from settings import Settings
 from catch_statistics import CatchStatistics
-settings = Settings()
-catch_statistics = CatchStatistics()
+
 logger = Logger().get_logger()
+catch_statistics = CatchStatistics()
 
 class Lootbox:
     @staticmethod
-    def actions(driver: Driver, inventory):
-        logger.info(f"[Lootbox] You have {Lootbox.get_lootbox_amount(inventory)} lootbox...")
-        if Lootbox.get_lootbox_amount(inventory) >= 10:
-            logger.info(f"Opening {Lootbox.get_lootbox_amount(inventory)} lootbox...")
-            driver.write(";lb all")
-            lootbox_response = driver.get_last_element_by_user("PokéMeow", timeout=30)
-            if lootbox_response is None:
-                logger.warning("[Lootbox] Failed to open lootbox or to get response...")
+    async def actions(driver, inventory):
+        """
+        Tự động mở Lootbox nếu số lượng >= 10.
+        """
+        # 1. Kiểm tra số lượng
+        amount = Lootbox.get_lootbox_amount(inventory)
+        logger.info(f"[Lootbox] You have {amount} lootboxes...")
+
+        if amount >= 10:
+            logger.info(f"[Lootbox] Opening {amount} lootboxes...")
+            
+            # Gửi lệnh
+            await driver.write(";lb all")
+            
+            # Đợi phản hồi
+            response = await driver.get_last_element_by_user("PokéMeow", timeout=30)
+            
+            if response is None:
+                logger.warning("[Lootbox] Failed to get response (Timeout).")
                 return
-            items = Lootbox.extract_items(lootbox_response.get_attribute('innerHTML'))
-            logger.info(f"[Lootbox] Items Earned:")
-            catch_statistics.add_lootboxes_opened(Lootbox.get_lootbox_amount(inventory))
-            for item in items:
-                catch_statistics.add_item_lootbox(item, items[item])
-                logger.info(f"[Lootbox] {item}: {items[item]}")
+
+            # 2. Parse items bằng Regex
+            items = Lootbox.extract_items(response.content)
+            
+            # 3. Log và Thống kê
+            if items:
+                logger.info(f"[Lootbox] Items Earned:")
                 
-        
+                # Cập nhật thống kê
+                catch_statistics.add_lootboxes_opened(amount)
+                
+                for name, qty in items.items():
+                    catch_statistics.add_item_lootbox(name, qty)
+                    logger.info(f"[Lootbox] {name}: {qty}")
+            else:
+                logger.warning("[Lootbox] Opened but found no items (Parsing failed?).")
+                
     @staticmethod
     def get_lootbox_amount(inventory) -> int:
-        return next((item['count'] for item in inventory if item['name'] == 'lootbox'), None)
+        # Tìm item có tên 'lootbox' trong inventory list
+        return next((item['count'] for item in inventory if item['name'] == 'lootbox'), 0)
     
     @staticmethod
-    def extract_items(html):
-        soup = BeautifulSoup(html, 'html.parser')
+    def extract_items(content):
+        """
+        Regex parse text từ tin nhắn Lootbox.
+        """
         items = {}
-        
-        # Find all strong tags where quantities are located
-        quantity_tags = soup.find_all('strong')
-        
-        for tag in quantity_tags:
-            # Checking if the text contains 'x' which indicates a quantity
-            if 'x' in tag.text:
-                try:
-                    # Following sibling for each tag, which should be the img tag
-                    item_img = tag.find_next('img')
-                    if item_img:
-                        # Extracting the number of items
-                        quantity = int(tag.text.strip().replace(' x', '').replace(',', ''))
-                        # Extracting the item name from the alt attribute of the img tag
-                        item_name = item_img['alt'].strip(':')
-                        items[item_name] = quantity
-                except ValueError:
-                    # In case the conversion fails
-                    continue
+        if not content: return items
+
+        # 1. Bắt item thường: "**6 x** :pokeball:"
+        item_matches = re.findall(r'\*\*([\d,]+)\s*x\*\*\s*:([a-zA-Z0-9_]+):', content)
+        for qty_str, name in item_matches:
+            try:
+                items[name] = int(qty_str.replace(',', ''))
+            except ValueError: continue
+
+        # 2. Bắt PokeCoin: ":PokeCoin: **1,439**!"
+        coin_match = re.search(r':PokeCoin:\s*\*\*([\d,]+)\*\*', content)
+        if coin_match:
+            try:
+                items['pokecoin'] = int(coin_match.group(1).replace(',', ''))
+            except ValueError: pass
 
         return items

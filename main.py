@@ -1,36 +1,66 @@
-from instances.bot_instance import bot, logger, driver, catch_statistics, settings
+import discord
+import asyncio
 import os
-from helpers.sleep_helper import interruptible_sleep
-import threading
 import sys
-bat_file_name = None
+from dotenv import load_dotenv
 
+from settings import Settings
+from driver import Driver
+from bot import Bot
+from logger import Logger
 
+load_dotenv()
+logger = Logger().get_logger()
 
-def try_login(driver):
-    if len(sys.argv) > 1:
-        bat_file_name = [sys.argv[1]]
-    
-    email = os.getenv('EMAIL')
-    password = os.getenv('PASSWORD')
-    channel = os.getenv('CHANNEL')
-    discord_token = os.getenv('DISCORD_TOKEN')
+# Sử dụng discord.py-self
+class MySelfBot(discord.Client):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.my_bot_logic = None
 
-    driver.start_driver()
-    #  check if discord_token is valid
-    if discord_token and len(discord_token) > 25:
-        if not driver.inject_token(discord_token):
-            driver.navigate_to_page("https://discord.com/login")
-            driver.login(email,password) 
-    else:
-        driver.navigate_to_page("https://discord.com/login")
-        driver.login(email,password)
-    driver.navigate_to_page(channel)
-    interruptible_sleep(5)
-    
-     
+    async def on_ready(self):
+        logger.info(f"Logged in as {self.user} (ID: {self.user.id})")
+        
+        # 1. Lấy Settings
+        settings = Settings()
+        
+        # 2. Tìm Channel object từ ID trong env
+        if not settings.channel_id:
+            logger.error("Vui lòng set CHANNEL_ID trong file .env!")
+            await self.close()
+            return
+            
+        target_channel = self.get_channel(settings.channel_id)
+        if not target_channel:
+            logger.error(f"Không tìm thấy channel có ID: {settings.channel_id}")
+            # Thử fetch nếu get trả về None (ít khi cần với selfbot nhưng cứ thêm cho chắc)
+            try:
+                target_channel = await self.fetch_channel(settings.channel_id)
+            except:
+                logger.error("Không thể fetch channel.")
+                await self.close()
+                return
+
+        # 3. Khởi tạo Driver (với bot=self, channel=target_channel)
+        # Driver của bạn đã viết đúng async, nên truyền vào đây là chuẩn bài.
+        driver = Driver(self, target_channel)
+        
+        # 4. Khởi tạo Bot Logic (truyền driver vào)
+        self.my_bot_logic = Bot(driver)
+        
+        logger.info("Bot initialized. Starting Scheduler...")
+        
+        # 5. Chạy Scheduler (Loop chính)
+        # Vì Scheduler là vòng lặp vô tận, ta await nó ở đây thì bot sẽ chạy mãi
+        await self.my_bot_logic.run()
+
 if __name__ == "__main__":
-    try_login(driver)
-    driver.validate()
-    driver.print_initial_message()
-    threading.Thread(target=bot.scheduler.run).start()
+    # Check Token
+    token = os.getenv('DISCORD_TOKEN')
+    if not token:
+        print("Error: DISCORD_TOKEN not found in .env")
+        sys.exit(1)
+
+    # Chạy Client
+    client = MySelfBot()
+    client.run(token)
